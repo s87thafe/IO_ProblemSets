@@ -1,0 +1,14 @@
+Notes on the Poblem Set 1
+
+Question 1: Linear Regression
+1. straightforward
+2. no solver, take derivative and solve "manually"
+3. Check for heteroscedasticity first, if not use HC3 standard errors
+4. Plot residuals on education, if not derive analytically
+5. revise IV
+6. see 5.
+
+Question 2:
+1. 
+2. By assumption y > p_choclatebar: linearity
+
