@@ -34,3 +34,55 @@ beta0_ols = meany - beta1_ols*meanx
 # Verification
 beta_ols[1] - beta0_ols
 beta_ols[2] - beta1_ols
+
+# Task 3: Asymptotic Standard Errors
+
+# Calculating the variance of residuals
+residuals_var <- sum(u_ols^2) / (nrow(MROZ_mini) - ncol(expvar))
+
+# Covariance matrix for the beta estimates
+cov_matrix <- residuals_var * inv
+
+# Standard errors of the coefficients
+std_errors <- sqrt(diag(cov_matrix))
+
+# Output the results
+cat("Covariance matrix:\n")
+print(cov_matrix)
+
+cat("Standard errors:\n")
+print(std_errors)
+
+#Task 4
+# Plotting residuals against education
+plot(MROZ_mini$educ, u_ols, xlab = "Education (years)", ylab = "Residuals", main = "Residuals vs. Education")
+abline(h = 0, col = "red")
+
+#Task 5
+# Test for relevance
+educ_reg <- lm(educ ~ fatheduc, data = MROZ_mini)
+summary(educ_reg)
+
+#Task 6
+# First Stage
+first_stage <- lm(educ ~ fatheduc, data = MROZ_mini)
+predicted_educ <- predict(first_stage, newdata = MROZ_mini)
+MROZ_mini$predicted_educ <- predicted_educ
+
+# Second Stage
+second_stage <- lm(lwage ~ predicted_educ, data = MROZ_mini)
+second_stage_summary <- summary(second_stage)
+
+# Re-run OLS for comparison
+ols_model <- lm(lwage ~ educ, data = MROZ_mini)
+ols_summary <- summary(ols_model)
+
+# Extracting coefficients and standard errors
+results <- data.frame(
+  Model = c("OLS", "IV (2SLS)"),
+  Intercept = c(ols_summary$coefficients[1, 1], second_stage_summary$coefficients[1, 1]),
+  Intercept_SE = c(sqrt(diag(ols_summary$cov.unscaled))[1], sqrt(diag(second_stage_summary$cov.unscaled))[1]),
+  Educ_or_Pred_Educ = c(ols_summary$coefficients[2, 1], second_stage_summary$coefficients[2, 1]),
+  Educ_or_Pred_Educ_SE = c(sqrt(diag(ols_summary$cov.unscaled))[2], sqrt(diag(second_stage_summary$cov.unscaled))[2])
+)
+print(results)
