@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 from numpy.linalg import inv
-from config import PS1
+from pathlib import Path
+# from IO_ProblemSets.config import PS1
 
 # Task 1
 # Without an outside option, it's possible to estimate relative differences between Kinoko and Takenoko, but not their absolute utilities, limiting the analysis to relative preferences and sensitivities.
@@ -14,8 +15,9 @@ from config import PS1
 
 # Task 4
 # Load your data
+PS1 = Path(__file__).parent.resolve()
 data_path = PS1.joinpath("data").resolve()
-data = pd.read_csv(data_path, 'data_KinokoTakenoko.csv')
+data = pd.read_csv(data_path/'data_KinokoTakenoko.csv')
 
 # Define price settings for occasions
 price_mapping = {
@@ -95,15 +97,13 @@ def hessian(params):
         hess[0, 0] += -p_kinoko_prob * (1 - p_kinoko_prob)
         hess[1, 1] += -p_takenoko_prob * (1 - p_takenoko_prob)
         hess[2, 2] += -(p_kinoko_prob * p_kinoko ** 2 + p_takenoko_prob * p_takenoko ** 2)
-        
-        # Other entries for cross derivatives would be added here as needed
     return -hess
 
 # Initial guesses for parameters
 params = np.array([0.0, 0.0, -0.01])
 
 # Newton-Raphson iteration
-for _ in range(10):  # Limit to 10 iterations for safety
+for _ in range(1000):
     grad = gradient(params)
     hess = hessian(params)
     step = np.dot(inv(hess), grad)
