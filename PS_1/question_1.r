@@ -32,7 +32,9 @@ beta1_ols = (sum((MROZ_mini$educ-meanx)*(MROZ_mini$lwage-meany)))/(sum((MROZ_min
 beta0_ols = meany - beta1_ols*meanx
 
 # Verification
-print('Task 2: 1.', beta_ols[1] - beta0_ols, 'and 2.', beta_ols[2] - beta1_ols)
+print(beta_ols)
+print(beta0_ols)
+print(beta1_ols)
 
 # Task 3: Asymptotic Standard Errors
 
@@ -50,7 +52,7 @@ cat("Covariance matrix:\n")
 print(cov_matrix)
 
 cat("Standard errors:\n")
-print('Task 3:', std_errors)
+print(std_errors)
 
 #Task 4
 # Plotting residuals against education
@@ -60,7 +62,7 @@ abline(h = 0, col = "red")
 #Task 5
 # Test for relevance
 educ_reg <- lm(educ ~ fatheduc, data = MROZ_mini)
-print('Task 5:', summary(educ_reg))
+print(summary(educ_reg))
 
 #Task 6
 # First Stage
@@ -81,7 +83,9 @@ results <- data.frame(
   Model = c("OLS", "IV (2SLS)"),
   Intercept = c(ols_summary$coefficients[1, 1], second_stage_summary$coefficients[1, 1]),
   Intercept_SE = c(sqrt(diag(ols_summary$cov.unscaled))[1], sqrt(diag(second_stage_summary$cov.unscaled))[1]),
-  Educ_or_Pred_Educ = c(ols_summary$coefficients[2, 1], second_stage_summary$coefficients[2, 1]),
+  Educ_or_Pred_Educ = c(ols_summary$ccd oefficients[2, 1], second_stage_summary$coefficients[2, 1]),
   Educ_or_Pred_Educ_SE = c(sqrt(diag(ols_summary$cov.unscaled))[2], sqrt(diag(second_stage_summary$cov.unscaled))[2])
 )
-print('Task 6:', results)
+
+# show results
+print(results)
