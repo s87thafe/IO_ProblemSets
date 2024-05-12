@@ -9,7 +9,7 @@ data_path = PS2.joinpath("data").resolve()
 data = pd.read_csv(data_path/'WSDR.csv')
 
 # Task 1: Descriptive statistics
-# Rename columns to more descriptive names if necessary
+# Rename columns
 data.rename(columns={'move': 'units_sold', 'custcoun': 'customer_count'}, inplace=True)
 
 # Limit summary statistics to variables of interest:
@@ -33,8 +33,18 @@ data['log_market_share'] = np.log(data['market_shares'])
 # Calculating the wholesale price
 data['wholesale_price'] = data['price'] * (1 - data['profit'] / 100)
 
-# Create dummy variables for the 'upc' column and join them back to the original dataset
-data = pd.get_dummies(data, columns=['upc'], prefix='upc', drop_first=True)
+# Preserve original data
+data['original_upc'] = data['upc']
+
+# Create dummy variables for the 'upc' column
+upc_dummies = pd.get_dummies(data['upc'], prefix='upc', drop_first=True)
+
+# Join the dummy variables back to the original dataset
+data = pd.concat([data.drop('upc', axis=1), upc_dummies], axis=1)
+
+# Ensure all dummy columns are of integer type
+for col in upc_dummies.columns:
+    data[col] = data[col].astype(int)
 
 # Calculate total units sold across all weeks
 total_units_sold = data['units_sold'].sum()
@@ -57,11 +67,6 @@ Y = data['log_choice_prob']
 X = data[['price'] + [col for col in data.columns if col.startswith('upc_')]]
 X = sm.add_constant(X)  # adding a constant for the intercept
 
-# Booleans are not supported by statsmodels, conver into integers
-bool_cols = [col for col in X.columns if X[col].dtype == 'bool']
-for col in bool_cols:
-    X[col] = X[col].astype(int)
-
 # Create the OLS model
 model = sm.OLS(Y, X)
 
@@ -75,13 +80,52 @@ print(results.summary())
 instrument = data[['wholesale_price'] + [col for col in data.columns if col.startswith(('upc_'))]]
 instrument = sm.add_constant(instrument)  # add a constant to the instruments
 
-bool_cols = [col for col in instrument.columns if instrument[col].dtype == 'bool']
-# Convert each boolean column to int
-for col in bool_cols:
-    instrument[col] = instrument[col].astype(int)
-
 # Run the IV2SLS regression
 iv_model = IV2SLS(Y, X, instrument).fit()
 
+# Extract the coefficient for 'price'
+beta_price = iv_model.params['price']
+
 # Print the results
 print(iv_model.summary())
+
+# Task 3
+# Discuss the relevance of the IV
+X = sm.add_constant(data['wholesale_price'])
+
+# Run the first-stage regression
+first_stage = sm.OLS(data['price'], X).fit()
+
+# Print the summary of the regression to see the coefficient and p-value
+print(first_stage.summary())
+
+# Testing Exogeneity
+# Calculate residuals from the first stage
+data['residuals'] = first_stage.resid
+
+# Add a constant to the regression model
+X_resid = sm.add_constant(data['residuals'])
+
+# Regress the dependent variable on the residuals
+check_exogeneity = sm.OLS(data['log_choice_prob'], X_resid).fit()
+
+# Print the results
+print(check_exogeneity.summary())
+
+# Task 4
+# Compute the quantity sold for each product in each market
+data['quantity'] = data['market_shares'] * data.groupby(['week', 'store'])['units_sold'].transform('sum')
+
+# Calculate own-price elasticity for each product in each market
+data['own_price_elasticity'] = iv_model.params['price'] * data['price'] * (1 - data['market_shares'])
+
+# Calculate cross-price elasticities
+
+data['cross_price_elasticity'] = -iv_model.params['price'] * data['price'] * data['market_shares']
+
+
+# Median of own-price elasticity across markets
+median_own_price_elasticity = data.groupby(['week', 'store'])['own_price_elasticity'].median()
+median_cross_price_elasticity = data.groupby(['week', 'store'])['cross_price_elasticity'].median()
+print("Median Own-Price Elasticity across markets:", median_own_price_elasticity)
+print("Median Cross-Price Elasticity across markets:", median_cross_price_elasticity)
