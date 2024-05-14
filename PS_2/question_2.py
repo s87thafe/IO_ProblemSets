@@ -83,9 +83,6 @@ instrument = sm.add_constant(instrument)  # add a constant to the instruments
 # Run the IV2SLS regression
 iv_model = IV2SLS(Y, X, instrument).fit()
 
-# Extract the coefficient for 'price'
-beta_price = iv_model.params['price']
-
 # Print the results
 print(iv_model.summary())
 
@@ -113,19 +110,104 @@ check_exogeneity = sm.OLS(data['log_choice_prob'], X_resid).fit()
 print(check_exogeneity.summary())
 
 # Task 4
-# Compute the quantity sold for each product in each market
-data['quantity'] = data['market_shares'] * data.groupby(['week', 'store'])['units_sold'].transform('sum')
+# Create a dictionary to hold the elasticity matrices for each (week, store)
+elasticity_matrices = {}
 
-# Calculate own-price elasticity for each product in each market
-data['own_price_elasticity'] = iv_model.params['price'] * data['price'] * (1 - data['market_shares'])
+# Extract unique weeks and sort them
+unique_weeks = sorted(data['week'].unique())
 
-# Calculate cross-price elasticities
+# Extract unique stores and sort them
+unique_stores = sorted(data['store'].unique())
 
-data['cross_price_elasticity'] = -iv_model.params['price'] * data['price'] * data['market_shares']
+# Group data by week and store
+grouped = data.groupby(['week', 'store'])
+for (week, store), group in grouped:
+    n_products = len(group)
 
+    # Capture prices and market shares from the current group
+    prices = group['price'].values
+    market_shares = group['market_shares'].values
 
-# Median of own-price elasticity across markets
-median_own_price_elasticity = data.groupby(['week', 'store'])['own_price_elasticity'].median()
-median_cross_price_elasticity = data.groupby(['week', 'store'])['cross_price_elasticity'].median()
-print("Median Own-Price Elasticity across markets:", median_own_price_elasticity)
-print("Median Cross-Price Elasticity across markets:", median_cross_price_elasticity)
+    # Initialize the elasticity matrix
+    elasticity_matrix = np.zeros((n_products, n_products))
+    
+    for i in range(n_products):
+        for j in range(n_products):
+            if i != j:
+                elasticity_matrix[i, j] = -iv_model.params['price'] * prices[j] * market_shares[i]
+            else:
+                elasticity_matrix[i, j] = iv_model.params['price'] * prices[i] * (1 - market_shares[i])
+
+    # Store the matrix
+    elasticity_matrices[(week, store)] = elasticity_matrix
+
+import numpy as np
+
+# Task 5 and 6
+# Calculate marginal costs for each (week, store)
+marginal_costs_nb = {}
+marginal_costs_jp = {}
+all_prices = []
+all_marginal_costs_nb = []
+all_marginal_costs_jp = []
+
+# Regularization value to avoid singular matrix issues
+regularization_value = 1e-6
+
+for key, elasticity_matrix in elasticity_matrices.items():
+    week, store = key
+    group = grouped.get_group((week, store))
+    prices = group['price'].values
+    market_shares = group['market_shares'].values
+
+    # Initialize delta matrices
+    delta_matrix_nb = np.zeros_like(elasticity_matrix)
+    delta_matrix_jp = np.zeros_like(elasticity_matrix)
+    
+    for i in range(len(prices)):
+        for j in range(len(prices)):
+            delta_matrix_jp[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
+            if group['Brand'].iloc[i] == group['Brand'].iloc[j]:
+                delta_matrix_nb[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
+
+    # Add regularization value to the diagonal
+    delta_matrix_nb += np.eye(delta_matrix_nb.shape[0]) * regularization_value
+    delta_matrix_jp += np.eye(delta_matrix_jp.shape[0]) * regularization_value
+
+    # Calculate the marginal costs using the inverse of the delta matrix
+    s = market_shares
+    mc_nb = np.linalg.solve(delta_matrix_nb, s) + prices
+    mc_jp = np.linalg.solve(delta_matrix_jp, s) + prices
+
+    # Store the marginal costs
+    marginal_costs_nb[key] = mc_nb
+    marginal_costs_jp[key] = mc_jp
+    
+    # Collect all marginal costs and prices
+    all_marginal_costs_nb.extend(mc_nb)
+    all_marginal_costs_jp.extend(mc_jp)
+    all_prices.extend(prices)
+
+# Calculate the median marginal cost
+median_mc_nb = np.median(all_marginal_costs_nb)
+median_mc_jp = np.median(all_marginal_costs_jp)
+
+# Calculate markups (p - mc) and relative markups (p - mc) / p
+markups_nb = np.array(all_prices) - np.array(all_marginal_costs_nb)
+relative_markups_nb = markups_nb / np.array(all_prices)
+markups_jp = np.array(all_prices) - np.array(all_marginal_costs_jp)
+relative_markups_jp = markups_jp / np.array(all_prices)
+
+# Calculate median values for markups and relative markups
+median_markup_nb = np.median(markups_nb)
+median_relative_markup_nb = np.median(relative_markups_nb)
+median_markup_jp = np.median(markups_jp)
+median_relative_markup_jp = np.median(relative_markups_jp)
+
+print("Median Marginal Cost Nash Bertrand:", median_mc_nb)
+print("Median Markup Nash Bertrand (p - mc):", median_markup_nb)
+print("Median Relative Markup Nash Bertrand (p - mc) / p:", median_relative_markup_nb)
+
+print("Median Marginal Cost Joint Pricing:", median_mc_jp)
+print("Median Markup Joint Pricing (p - mc):", median_markup_jp)
+print("Median Relative Markup Joint Pricing (p - mc) / p:", median_relative_markup_jp)
