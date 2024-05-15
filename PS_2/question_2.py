@@ -141,18 +141,33 @@ for (week, store), group in grouped:
     # Store the matrix
     elasticity_matrices[(week, store)] = elasticity_matrix
 
-import numpy as np
+own_price_elasticities = []
+cross_price_elasticities = []
 
-# Task 5 and 6
+for matrix in elasticity_matrices.values():
+    # Extract diagonal (own-price elasticities)
+    own_price_elasticities.extend(np.diag(matrix))
+    
+    # Extract off-diagonal (cross-price elasticities)
+    n = matrix.shape[0]  # Size of the matrix
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                cross_price_elasticities.append(matrix[i, j])
+
+# Calculate median of own-price and cross-price elasticities
+median_own_price = np.median(own_price_elasticities)
+median_cross_price = np.median(cross_price_elasticities)
+
+print("Median Own-Price Elasticity:", median_own_price)
+print("Median Cross-Price Elasticity:", median_cross_price)
+
+# Task 5
+# Nash Bertrand equilibrium
 # Calculate marginal costs for each (week, store)
-marginal_costs_nb = {}
-marginal_costs_jp = {}
+marginal_costs = {}
+all_marginal_costs = []
 all_prices = []
-all_marginal_costs_nb = []
-all_marginal_costs_jp = []
-
-# Regularization value to avoid singular matrix issues
-regularization_value = 1e-6
 
 for key, elasticity_matrix in elasticity_matrices.items():
     week, store = key
@@ -160,54 +175,113 @@ for key, elasticity_matrix in elasticity_matrices.items():
     prices = group['price'].values
     market_shares = group['market_shares'].values
 
-    # Initialize delta matrices
-    delta_matrix_nb = np.zeros_like(elasticity_matrix)
-    delta_matrix_jp = np.zeros_like(elasticity_matrix)
-    
+    # Derive the delta matrix
+    delta_matrix = np.zeros_like(elasticity_matrix)
     for i in range(len(prices)):
         for j in range(len(prices)):
-            delta_matrix_jp[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
             if group['Brand'].iloc[i] == group['Brand'].iloc[j]:
-                delta_matrix_nb[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
+                delta_matrix[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
 
-    # Add regularization value to the diagonal
-    delta_matrix_nb += np.eye(delta_matrix_nb.shape[0]) * regularization_value
-    delta_matrix_jp += np.eye(delta_matrix_jp.shape[0]) * regularization_value
+    try:
+        delta_matrix_inv = np.linalg.inv(delta_matrix)
+    except np.linalg.LinAlgError:
+        delta_matrix_inv = np.linalg.pinv(delta_matrix)
 
-    # Calculate the marginal costs using the inverse of the delta matrix
+    # Calculate the marginal costs
     s = market_shares
-    mc_nb = np.linalg.solve(delta_matrix_nb, s) + prices
-    mc_jp = np.linalg.solve(delta_matrix_jp, s) + prices
+    mc = np.dot(delta_matrix_inv, s) + prices
 
     # Store the marginal costs
-    marginal_costs_nb[key] = mc_nb
-    marginal_costs_jp[key] = mc_jp
+    marginal_costs[key] = mc
     
     # Collect all marginal costs and prices
-    all_marginal_costs_nb.extend(mc_nb)
-    all_marginal_costs_jp.extend(mc_jp)
+    all_marginal_costs.extend(mc)
     all_prices.extend(prices)
 
 # Calculate the median marginal cost
-median_mc_nb = np.median(all_marginal_costs_nb)
-median_mc_jp = np.median(all_marginal_costs_jp)
+median_mc = np.median(all_marginal_costs)
 
 # Calculate markups (p - mc) and relative markups (p - mc) / p
-markups_nb = np.array(all_prices) - np.array(all_marginal_costs_nb)
-relative_markups_nb = markups_nb / np.array(all_prices)
-markups_jp = np.array(all_prices) - np.array(all_marginal_costs_jp)
-relative_markups_jp = markups_jp / np.array(all_prices)
+markups = np.array(all_prices) - np.array(all_marginal_costs)
+relative_markups = markups / np.array(all_prices)
 
 # Calculate median values for markups and relative markups
-median_markup_nb = np.median(markups_nb)
-median_relative_markup_nb = np.median(relative_markups_nb)
-median_markup_jp = np.median(markups_jp)
-median_relative_markup_jp = np.median(relative_markups_jp)
+median_markup = np.median(markups)
+median_relative_markup = np.median(relative_markups)
 
-print("Median Marginal Cost Nash Bertrand:", median_mc_nb)
-print("Median Markup Nash Bertrand (p - mc):", median_markup_nb)
-print("Median Relative Markup Nash Bertrand (p - mc) / p:", median_relative_markup_nb)
+print("Median Marginal Cost:", median_mc)
+print("Median Markup (p - mc) Nash Equilibrium:", median_markup)
+print("Median Relative Markup (p - mc) / p Nash Equilibrium:", median_relative_markup)
 
-print("Median Marginal Cost Joint Pricing:", median_mc_jp)
-print("Median Markup Joint Pricing (p - mc):", median_markup_jp)
-print("Median Relative Markup Joint Pricing (p - mc) / p:", median_relative_markup_jp)
+# Joint Pricing:
+# Best-response mapping function without regularization
+def best_response_mapping(prices, mc, elasticity_matrix, market_shares):
+    n_products = len(prices)
+    delta_matrix = np.zeros_like(elasticity_matrix)
+    
+    for i in range(n_products):
+        for j in range(n_products):
+            delta_matrix[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
+    
+    q = market_shares
+    eta = np.linalg.lstsq(delta_matrix**(-1), q, rcond=None)[0]
+    return mc + eta
+
+# Normalize prices and market shares
+def normalize(values):
+    mean_value = np.mean(values)
+    if mean_value == 0:
+        raise ValueError("Mean of the values is zero, cannot normalize.")
+    return values / mean_value
+
+# Set a convergence threshold
+threshold = 1e-2
+max_iterations = 100
+
+# Initial prices normalization
+initial_prices = {key: normalize(group['price'].values) for key, group in grouped}
+
+# Iterate over each (week, store) pair
+joint_prices = {}
+iteration_counts = {}
+for key, elasticity_matrix in elasticity_matrices.items():
+    week, store = key
+    group = grouped.get_group((week, store))
+    prices = initial_prices[key]
+    market_shares = group['market_shares'].values
+    mc = marginal_costs[key]
+
+    # Initialize the price vector
+    p_current = prices
+    iteration_count = 0
+    for iteration in range(max_iterations):
+        iteration_count += 1
+        # Calculate the new prices using the best-response mapping
+        p_new = best_response_mapping(p_current, mc, elasticity_matrix, market_shares)
+        
+        # Check for convergence
+        if np.max(np.abs(p_new - p_current)) < threshold:
+            break
+        p_current = p_new
+
+    # Store the converged prices and iteration count
+    joint_prices[key] = p_current
+    iteration_counts[key] = iteration_count
+
+# Collect all joint prices for further analysis
+all_joint_prices = [price for prices in joint_prices.values() for price in prices]
+
+# Diagnostic: Print median prices and marginal costs before calculating markups
+print("Median Prices:", np.median(all_joint_prices))
+print("Median Marginal Costs:", np.median(all_marginal_costs))
+
+# Calculate markups (p - mc) and relative markups (p - mc) / p for joint prices
+joint_markups = np.array(all_joint_prices) - np.array(all_marginal_costs)
+joint_relative_markups = joint_markups / np.array(all_joint_prices)
+
+# Calculate median values for joint markups and relative markups
+median_joint_markup = np.median(joint_markups)
+median_joint_relative_markup = np.median(joint_relative_markups)
+
+print("Median Joint Markup (p - mc):", median_joint_markup)
+print("Median Joint Relative Markup (p - mc) / p:", median_joint_relative_markup)
