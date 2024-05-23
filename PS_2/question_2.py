@@ -4,11 +4,12 @@ import statsmodels.api as sm
 from statsmodels.sandbox.regression.gmm import IV2SLS
 from config import PS2
 
-# Load your data
+# Load data
 data_path = PS2.joinpath("data").resolve()
 data = pd.read_csv(data_path/'WSDR.csv')
 
 # Task 1: Descriptive statistics
+
 # Rename columns
 data.rename(columns={'move': 'units_sold', 'custcoun': 'customer_count'}, inplace=True)
 
@@ -18,17 +19,47 @@ data_subset = data[['units_sold', 'customer_count', 'price', 'profit']]
 # Calculate descriptive statistics for the numerical columns
 desc_stats = data_subset.describe().loc[['mean', 'std', 'min', 'max']]
 
+# Limit counting unique values to categorial variables
+categorial_vars = data[['store', 'upc', 'Brand', 'week']]
+
+# Create a dictionary to store the unique counts
+unique_counts = {col: len(data[col].unique()) for col in categorial_vars}
+
+# Convert the dictionary to a DataFrame
+unique_counts_df = pd.DataFrame(list(unique_counts.items()), columns=['Variable', 'Unique Values'])
+
+# Display the DataFrame
+print("Unique Counts:")
+print(unique_counts_df)
+
 # Display the descriptive statistics and the formatted DataFrame
 print("Descriptive Statistics:")
 print(desc_stats)
 
-
 # Task 2: IV and OLS
-# Calculating weekly market shares
-data['market_shares'] = data.groupby(['week', 'store'])['units_sold'].transform(lambda x: x / x.sum())
 
-# Calculate the logarithm of the weekly market share
+# Calculating market shares
+data['market_shares'] = data['units_sold']/data['customer_count']
 data['log_market_share'] = np.log(data['market_shares'])
+
+# Calculate total units sold across all weeks
+unique_pairs = data.groupby(['week', 'store'])['customer_count'].first()
+total_customers = unique_pairs.sum()
+
+# Correct iteration over MultiIndex
+for key in unique_pairs.index:
+    week, store = key
+    # Perform operations with week and store
+
+# Sum of sold units per market
+data['total_units_sold'] = data.groupby(['week', 'store'])['units_sold'].transform('sum')
+
+# Benchmark market size
+data['market_size'] = (total_customers - data['total_units_sold']) / data['customer_count']
+data['log_market_size'] = np.log(data['market_size'])
+
+# Define the dependent variable
+data['log_choice_prob'] = data['log_market_share'] - data['log_market_size']
 
 # Calculating the wholesale price
 data['wholesale_price'] = data['price'] * (1 - data['profit'] / 100)
@@ -46,242 +77,297 @@ data = pd.concat([data.drop('upc', axis=1), upc_dummies], axis=1)
 for col in upc_dummies.columns:
     data[col] = data[col].astype(int)
 
-# Calculate total units sold across all weeks
-total_units_sold = data['units_sold'].sum()
-
-# Subtract units sold per week from total units sold and subtract 1
-data['market_size'] = total_units_sold / data.groupby('week')['units_sold'].transform('sum') - 1
-
-# Calculate the logarithm of the market size
-data['log_market_size'] = np.log(data['market_size'])
-
-# Define the dependent variable
-data['log_choice_prob'] = data['log_market_share'] - data['log_market_size']
-
-
 # Run OLS
-# Define the dependent variable
+# Define the variables
+X_OLS = data[['price'] + [col for col in data.columns if col.startswith('upc_')]]
+X_OLS = sm.add_constant(X_OLS)  # adding a constant for the intercept
 Y = data['log_choice_prob']
-
-# Define the independent variables: include 'price' and all UPC dummies
-X = data[['price'] + [col for col in data.columns if col.startswith('upc_')]]
-X = sm.add_constant(X)  # adding a constant for the intercept
-
-# Create the OLS model
-model = sm.OLS(Y, X)
-
-# Fit the model
-results = model.fit()
-
-# Print the results
+OLS_model = sm.OLS(Y, X_OLS)
+results = OLS_model.fit()
 print(results.summary())
 
 # Run IV2SLS
 instrument = data[['wholesale_price'] + [col for col in data.columns if col.startswith(('upc_'))]]
-instrument = sm.add_constant(instrument)  # add a constant to the instruments
-
-# Run the IV2SLS regression
-iv_model = IV2SLS(Y, X, instrument).fit()
-
-# Print the results
-print(iv_model.summary())
+instrument = sm.add_constant(instrument)
+IV_model = IV2SLS(Y, X_OLS, instrument).fit()
+print(IV_model.summary())
 
 # Task 3
 # Discuss the relevance of the IV
-X = sm.add_constant(data['wholesale_price'])
+X_OLS = sm.add_constant(data['wholesale_price'])
 
 # Run the first-stage regression
-first_stage = sm.OLS(data['price'], X).fit()
+first_stage = sm.OLS(data['price'], X_OLS).fit()
 
 # Print the summary of the regression to see the coefficient and p-value
 print(first_stage.summary())
 
-# Testing Exogeneity
-# Calculate residuals from the first stage
-data['residuals'] = first_stage.resid
+# Task 4 and 6
+# Calculate own-price and cross-price elasticities and Marginal Costs
+# Create Unique Market IDs
+data['unique_id'] = data['store'].astype(str) + '_' + data['week'].astype(str)
+data['unique_market_id'] = pd.factorize(data['unique_id'])[0] + 1
+unique_markets = data['unique_market_id'].unique()
 
-# Add a constant to the regression model
-X_resid = sm.add_constant(data['residuals'])
-
-# Regress the dependent variable on the residuals
-check_exogeneity = sm.OLS(data['log_choice_prob'], X_resid).fit()
-
-# Print the results
-print(check_exogeneity.summary())
-
-# Task 4
-# Create a dictionary to hold the elasticity matrices for each (week, store)
 elasticity_matrices = {}
+own_price_elasticities_by_product = {}
+cross_price_elasticities_by_product = {}
 
-# Extract unique weeks and sort them
-unique_weeks = sorted(data['week'].unique())
+# Initialize columns for marginal costs
+data['marginal_cost_NB'] = np.nan
+data['marginal_cost_JP'] = np.nan
 
-# Extract unique stores and sort them
-unique_stores = sorted(data['store'].unique())
-
-# Group data by week and store
-grouped = data.groupby(['week', 'store'])
-for (week, store), group in grouped:
-    n_products = len(group)
-
-    # Capture prices and market shares from the current group
-    prices = group['price'].values
-    market_shares = group['market_shares'].values
-
+for market in unique_markets:
+    # Filter data for the current market
+    market_data = data[data['unique_market_id'] == market]
+    
+    # Determine the number of products
+    n_products = market_data['price'].shape[0]  # Assuming 'price' column has one price per product
+    
+    # Extract prices and market shares for the current market
+    prices = market_data['price'].values
+    market_shares = market_data['market_shares'].values
+    
     # Initialize the elasticity matrix
     elasticity_matrix = np.zeros((n_products, n_products))
-    
+    delta_matrice_NB_init = np.zeros((n_products, n_products))
+    delta_matrice_JP_init = np.zeros((n_products, n_products))
+
     for i in range(n_products):
+        product_i = market_data['original_upc'].iloc[i]
+        if product_i not in own_price_elasticities_by_product:
+            own_price_elasticities_by_product[product_i] = []
+        if product_i not in cross_price_elasticities_by_product:
+            cross_price_elasticities_by_product[product_i] = []
         for j in range(n_products):
             if i != j:
-                elasticity_matrix[i, j] = -iv_model.params['price'] * prices[j] * market_shares[i]
+                # Cross-price elasticity
+                elasticity_matrix[i, j] = -IV_model.params['price'] * prices[j] * market_shares[i]
+                cross_price_elasticities_by_product[product_i].append(elasticity_matrix[i, j])
+                if market_data['Brand'].iloc[i] == market_data['Brand'].iloc[j]:
+                    delta_matrice_NB_init[i, j] = elasticity_matrix[i, j] * (market_shares[i] / prices[i])
+                delta_matrice_JP_init[i, j] = elasticity_matrix[i, j] * (market_shares[i] / prices[i])
             else:
-                elasticity_matrix[i, j] = iv_model.params['price'] * prices[i] * (1 - market_shares[i])
-
-    # Store the matrix
-    elasticity_matrices[(week, store)] = elasticity_matrix
-
-own_price_elasticities = []
-cross_price_elasticities = []
-
-for matrix in elasticity_matrices.values():
-    # Extract diagonal (own-price elasticities)
-    own_price_elasticities.extend(np.diag(matrix))
+                # Own-price elasticity
+                elasticity_matrix[i, j] = IV_model.params['price'] * prices[i] * (1 - market_shares[i])
+                own_price_elasticities_by_product[product_i].append(elasticity_matrix[i, j])
+                if market_data['Brand'].iloc[i] == market_data['Brand'].iloc[j]:
+                    delta_matrice_NB_init[i, j] = elasticity_matrix[i, j] * (market_shares[i] / prices[i])
+                delta_matrice_JP_init[i, j] = elasticity_matrix[i, j] * (market_shares[i] / prices[i])
     
-    # Extract off-diagonal (cross-price elasticities)
-    n = matrix.shape[0]  # Size of the matrix
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                cross_price_elasticities.append(matrix[i, j])
+    delta_inv_NB = np.linalg.inv(delta_matrice_NB_init)
+    delta_inv_JP = np.linalg.inv(delta_matrice_JP_init)
+    
+    # Calculate marginal costs for each product
+    marginal_costs = np.dot(delta_inv_NB, market_shares) + prices
+    
+    # Update the main DataFrame with calculated marginal costs
+    data.loc[data['unique_market_id'] == market, 'marginal_cost'] = marginal_costs
+    
+    # Store the elasticity matrix for the current market
+    elasticity_matrices[market] = elasticity_matrix
 
-# Calculate median of own-price and cross-price elasticities
-median_own_price = np.median(own_price_elasticities)
-median_cross_price = np.median(cross_price_elasticities)
+# Calculate the median elasticity by product
+own_price_medians_by_product = {product: np.median(elasticities) for product, elasticities in own_price_elasticities_by_product.items()}
+cross_price_medians_by_product = {product: np.median(elasticities) for product, elasticities in cross_price_elasticities_by_product.items()}
 
-print("Median Own-Price Elasticity:", median_own_price)
-print("Median Cross-Price Elasticity:", median_cross_price)
+# Output the results
+print("Median Own Price Elasticities by Product:")
+print(own_price_medians_by_product)
+
+print("\nMedian Cross Price Elasticities by Product:")
+print(cross_price_medians_by_product)
+
+print("\nCalculated Marginal Cost:")
+print(data['marginal_cost'].median())
 
 # Task 5
+# Single Product Nash Bertrand: Assume that all firms except firm i keep their prices constant
+# Convergence parameters
+threshold = 1e-6
+max_iterations = 1000
+
+for market in unique_markets:
+    # Filter data for the current market
+    market_data = data[data['unique_market_id'] == market]
+    
+    # Determine the number of products
+    n_products = market_data.shape[0]
+
+    # Initialize the elasticity matrix
+    delta_matrice_SNB = np.zeros((n_products, n_products))
+    elasticity_matrix_SNB = np.zeros((n_products, n_products))
+
+    # Initialize prices
+    market_data['predicted_prices_SNB'] = market_data['price'].values
+    x = 0
+
+    while x < max_iterations:
+        x += 1
+        previous_prices = market_data['predicted_prices_SNB'].copy()
+
+        # Extract prices and market shares for the current market
+        selected_columns = ['predicted_prices_SNB'] + [col for col in market_data.columns if col.startswith('upc_')]
+        algo_X = market_data[selected_columns]
+        algo_X = sm.add_constant(algo_X)
+        market_data['predicted_market_shares'] = np.exp(IV_model.predict(algo_X))
+        market_data['predicted_market_shares'] /= 1 + market_data['predicted_market_shares'].sum()
+        
+        market_shares = market_data['predicted_market_shares'].values
+        prices = market_data['predicted_prices_SNB'].values
+        
+        delta_inv_SNB = np.linalg.inv(delta_matrice_NB_init)
+        market_data['predicted_prices_NB'] = market_data['marginal_cost'] - np.dot(delta_inv_SNB, market_shares)
+
+        # Check for convergence
+        if np.all(np.abs(previous_prices - market_data['predicted_prices_SNB']) < threshold):
+            break
+
+    # Store the final prices in the main DataFrame
+    data.loc[data['unique_market_id'] == market, 'predicted_markup_SNB'] = market_data['predicted_prices_SNB']-market_data['marginal_cost']
+    data.loc[data['unique_market_id'] == market, 'predicted_relative_markup_SNB'] = data['predicted_markup_SNB'] / market_data['predicted_prices_SNB']
+    
 # Nash Bertrand equilibrium
-# Calculate marginal costs for each (week, store)
-marginal_costs = {}
-all_marginal_costs = []
-all_prices = []
+# Convergence parameters
+threshold = 1e-6
+max_iterations = 1000
 
-for key, elasticity_matrix in elasticity_matrices.items():
-    week, store = key
-    group = grouped.get_group((week, store))
-    prices = group['price'].values
-    market_shares = group['market_shares'].values
-
-    # Derive the delta matrix
-    delta_matrix = np.zeros_like(elasticity_matrix)
-    for i in range(len(prices)):
-        for j in range(len(prices)):
-            if group['Brand'].iloc[i] == group['Brand'].iloc[j]:
-                delta_matrix[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
-
-    try:
-        delta_matrix_inv = np.linalg.inv(delta_matrix)
-    except np.linalg.LinAlgError:
-        delta_matrix_inv = np.linalg.pinv(delta_matrix)
-
-    # Calculate the marginal costs
-    s = market_shares
-    mc = np.dot(delta_matrix_inv, s) + prices
-
-    # Store the marginal costs
-    marginal_costs[key] = mc
+for market in unique_markets:
+    # Filter data for the current market
+    market_data = data[data['unique_market_id'] == market]
     
-    # Collect all marginal costs and prices
-    all_marginal_costs.extend(mc)
-    all_prices.extend(prices)
+    # Determine the number of products
+    n_products = market_data.shape[0]
 
-# Calculate the median marginal cost
-median_mc = np.median(all_marginal_costs)
+    # Initialize the elasticity matrix
+    delta_matrice_NB = np.zeros((n_products, n_products))
+    elasticity_matrix_NB = np.zeros((n_products, n_products))
 
-# Calculate markups (p - mc) and relative markups (p - mc) / p
-markups = np.array(all_prices) - np.array(all_marginal_costs)
-relative_markups = markups / np.array(all_prices)
+    # Initialize prices
+    market_data['predicted_prices_NB'] = market_data['price'].values
+    x = 0
 
-# Calculate median values for markups and relative markups
-median_markup = np.median(markups)
-median_relative_markup = np.median(relative_markups)
+    while x < max_iterations:
+        x += 1
+        previous_prices = market_data['predicted_prices_NB'].copy()
 
-print("Median Marginal Cost:", median_mc)
-print("Median Markup (p - mc) Nash Equilibrium:", median_markup)
-print("Median Relative Markup (p - mc) / p Nash Equilibrium:", median_relative_markup)
+        # Extract prices and market shares for the current market
+        selected_columns = ['predicted_prices_NB'] + [col for col in market_data.columns if col.startswith('upc_')]
+        algo_X = market_data[selected_columns]
+        algo_X = sm.add_constant(algo_X)
+        market_data['predicted_market_shares'] = np.exp(IV_model.predict(algo_X))
+        market_data['predicted_market_shares'] /= 1 + market_data['predicted_market_shares'].sum()
+        market_shares = market_data['predicted_market_shares'].values
+        prices = market_data['predicted_prices_NB'].values
 
-# Joint Pricing:
-# Best-response mapping function without regularization
-def best_response_mapping(prices, mc, elasticity_matrix, market_shares):
-    n_products = len(prices)
-    delta_matrix = np.zeros_like(elasticity_matrix)
+        for i in range(n_products):
+            for j in range(n_products):
+                if i != j:
+                    # Cross-price elasticity
+                    elasticity_matrix_NB[i, j] = -IV_model.params['price'] * prices[j] * market_shares[i]
+                    if market_data['Brand'].iloc[i] == market_data['Brand'].iloc[j]:
+                        delta_matrice_NB[i, j] = elasticity_matrix_NB[i, j] * (market_shares[i] / prices[i])
+                else:
+                    # Own-price elasticity
+                    elasticity_matrix_NB[i, j] = IV_model.params['price'] * prices[i] * (1 - market_shares[i])
+                    if market_data['Brand'].iloc[i] == market_data['Brand'].iloc[j]:
+                        delta_matrice_NB[i, j] = elasticity_matrix_NB[i, j] * (market_shares[i] / prices[i])
+        
+        delta_inv_NB = np.linalg.inv(delta_matrice_NB)
+        market_data['predicted_prices_NB'] = market_data['marginal_cost'] - np.dot(delta_inv_NB, market_shares)
+
+        # Check for convergence
+        if np.all(np.abs(previous_prices - market_data['predicted_prices_NB']) < threshold):
+            break
+
+    # Store the final prices in the main DataFrame
+    data.loc[data['unique_market_id'] == market, 'predicted_markup_NB'] = market_data['predicted_prices_NB']-market_data['marginal_cost']
+    data.loc[data['unique_market_id'] == market, 'predicted_relative_markup_NB'] = data['predicted_markup_NB'] / market_data['predicted_prices_NB']
+
+
+# Convergence parameters
+threshold = 1e-3
+max_iterations = 1000
+determinanten = []
+
+for market in unique_markets:
+    # Filter data for the current market
+    market_data = data[data['unique_market_id'] == market]
     
-    for i in range(n_products):
-        for j in range(n_products):
-            delta_matrix[i, j] = elasticity_matrix[i, j] * market_shares[i] / prices[j]
-    
-    q = market_shares
-    eta = np.linalg.lstsq(delta_matrix**(-1), q, rcond=None)[0]
-    return mc + eta
+    # Determine the number of products
+    n_products = market_data.shape[0]
 
-# Normalize prices and market shares
-def normalize(values):
-    mean_value = np.mean(values)
-    if mean_value == 0:
-        raise ValueError("Mean of the values is zero, cannot normalize.")
-    return values / mean_value
+    # Initialize the elasticity matrix
+    delta_matrice_JP = np.zeros((n_products, n_products))
+    elasticity_matrix_JP = np.zeros((n_products, n_products))
 
-# Set a convergence threshold
-threshold = 1e-2
-max_iterations = 100
+    # Initialize prices
+    market_data['predicted_prices_JP'] = market_data['price'].values
+    x = 0
 
-# Initial prices normalization
-initial_prices = {key: normalize(group['price'].values) for key, group in grouped}
+    while x < max_iterations:
+        x += 1
+        previous_prices = market_data['predicted_prices_JP'].copy()
+        
+        # Extract prices and market shares for the current market
+        selected_columns = ['predicted_prices_JP'] + [col for col in market_data.columns if col.startswith('upc_')]
+        algo_X = market_data[selected_columns]
+        algo_X = sm.add_constant(algo_X)
+        
+        # Predict market shares
+        market_data['predicted_market_shares'] = np.exp(IV_model.predict(algo_X))
+        market_data['predicted_market_shares'] /= 1 + market_data['predicted_market_shares'].sum()
+        market_shares = market_data['predicted_market_shares'].values
+        prices = market_data['predicted_prices_JP'].values
+        
+        for i in range(n_products):
+            for j in range(n_products):
+                if i != j:
+                    # Cross-price elasticity
+                    elasticity_matrix_JP[i, j] = -IV_model.params['price'] * prices[j] * market_shares[i]
+                    delta_matrice_JP[i, j] = elasticity_matrix_JP[i, j] * (market_shares[i] / prices[i])
+                else:
+                    # Own-price elasticity
+                    elasticity_matrix_JP[i, j] = IV_model.params['price'] * prices[i] * (1 - market_shares[i])
+                    delta_matrice_JP[i, j] = elasticity_matrix_JP[i, j] * (market_shares[i] / prices[i])
 
-# Iterate over each (week, store) pair
-joint_prices = {}
-iteration_counts = {}
-for key, elasticity_matrix in elasticity_matrices.items():
-    week, store = key
-    group = grouped.get_group((week, store))
-    prices = initial_prices[key]
-    market_shares = group['market_shares'].values
-    mc = marginal_costs[key]
+        # To avoid numerical issues, we normalize the matrix            
+        scaling_factor = np.linalg.norm(delta_matrice_JP, ord=np.inf)
+        normalized_matrix = delta_matrice_JP / scaling_factor
 
-    # Initialize the price vector
-    p_current = prices
-    iteration_count = 0
-    for iteration in range(max_iterations):
-        iteration_count += 1
-        # Calculate the new prices using the best-response mapping
-        p_new = best_response_mapping(p_current, mc, elasticity_matrix, market_shares)
+        # Calculate the determinant of the matrix
+        inverse_normalized_matrix = np.linalg.inv(normalized_matrix)
+        
+        # Denormalize again
+        delta_inv_JP = inverse_normalized_matrix / scaling_factor
+        
+        market_data['predicted_prices_JP'] = market_data['marginal_cost'] - np.dot(delta_inv_JP, market_shares)
         
         # Check for convergence
-        if np.max(np.abs(p_new - p_current)) < threshold:
+        if np.all(np.abs(previous_prices - market_data['predicted_prices_JP']) < threshold):
             break
-        p_current = p_new
 
-    # Store the converged prices and iteration count
-    joint_prices[key] = p_current
-    iteration_counts[key] = iteration_count
+    # Store the final prices in the main DataFrame
+    data.loc[data['unique_market_id'] == market, 'predicted_markup_JP'] = market_data['predicted_prices_JP']-market_data['marginal_cost']
+    data.loc[data['unique_market_id'] == market, 'predicted_relative_markup_JP'] = data['predicted_markup_JP'] / market_data['predicted_prices_JP']
+    
+print("\nCalculated Single Product Nash Bertrand Markups:")
+print(data['predicted_markup_SNB'].describe())
+print("\nCalculated Single Product Nash Bertrand Median Markups:")
+print(data['predicted_markup_SNB'].median())
+print("\nCalculated Single Product Nash Bertrand Median Relative Markups:")
+print(data['predicted_relative_markup_SNB'].median())
 
-# Collect all joint prices for further analysis
-all_joint_prices = [price for prices in joint_prices.values() for price in prices]
+print("\nCalculated Nash Bertrand Median Markups:")
+print(data['predicted_markup_NB'].describe())
+print("\nCalculated Nash Bertrand Median Markups:")
+print(data['predicted_markup_NB'].median())
+print("\nCalculated Nash Bertrand Median Relative Markups:")
+print(data['predicted_relative_markup_NB'].median())
 
-# Diagnostic: Print median prices and marginal costs before calculating markups
-print("Median Prices:", np.median(all_joint_prices))
-print("Median Marginal Costs:", np.median(all_marginal_costs))
-
-# Calculate markups (p - mc) and relative markups (p - mc) / p for joint prices
-joint_markups = np.array(all_joint_prices) - np.array(all_marginal_costs)
-joint_relative_markups = joint_markups / np.array(all_joint_prices)
-
-# Calculate median values for joint markups and relative markups
-median_joint_markup = np.median(joint_markups)
-median_joint_relative_markup = np.median(joint_relative_markups)
-
-print("Median Joint Markup (p - mc):", median_joint_markup)
-print("Median Joint Relative Markup (p - mc) / p:", median_joint_relative_markup)
+print("\nCalculated Joint Pricing Markups:")
+print(data['predicted_markup_JP'].describe())
+print("\nCalculated Joint Pricing Median Markups:")
+print(data['predicted_markup_JP'].median())
+print("\nCalculated Joint Pricing Median Relative Markups:")
+print(data['predicted_relative_markup_JP'].median())

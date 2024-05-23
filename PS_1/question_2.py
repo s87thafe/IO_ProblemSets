@@ -2,10 +2,10 @@ import pandas as pd
 import numpy as np
 from numpy.linalg import inv
 from pathlib import Path
-# from IO_ProblemSets.config import PS1
+from config import PS1
 
 # Task 1
-# Without an outside option, it's possible to estimate relative differences between Kinoko and Takenoko, but not their absolute utilities, limiting the analysis to relative preferences and sensitivities.
+# Without an outside option, it's possible to estimate relative differences between Kinoko and Takenoko, but not their absolute utilities
 
 #Task 2
 # The fixed income value simplifies to a component of the baseline utility in each choice scenario.
@@ -15,7 +15,6 @@ from pathlib import Path
 
 # Task 4
 # Load your data
-PS1 = Path(__file__).parent.resolve()
 data_path = PS1.joinpath("data").resolve()
 data = pd.read_csv(data_path/'data_KinokoTakenoko.csv')
 
@@ -100,10 +99,10 @@ def hessian(params):
     return -hess
 
 # Initial guesses for parameters
-params = np.array([0.0, 0.0, -0.01])
+params = np.array([10.0, 10.0, 0.01])
 
 # Newton-Raphson iteration
-for _ in range(1000):
+for _ in range(100):
     grad = gradient(params)
     hess = hessian(params)
     step = np.dot(inv(hess), grad)
