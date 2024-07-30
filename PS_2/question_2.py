@@ -57,7 +57,7 @@ data['total_units_sold'] = data.groupby(['week', 'store'])['units_sold'].transfo
 # Benchmark market size
 data['market_size'] = (total_customers - data['total_units_sold']) / data['customer_count']
 data['log_market_size'] = np.log(data['market_size'])
-cd 
+
 # Define the dependent variable
 data['log_choice_prob'] = data['log_market_share'] - data['log_market_size']
 
